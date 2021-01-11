@@ -6,10 +6,13 @@ import 'package:torn_pda/models/chaining/attack_model.dart';
 import 'package:torn_pda/models/chaining/bars_model.dart';
 import 'package:torn_pda/models/chaining/chain_model.dart';
 import 'package:torn_pda/models/chaining/target_model.dart';
+import 'package:torn_pda/models/education_model.dart';
+import 'package:torn_pda/models/friends/friend_model.dart';
+import 'package:torn_pda/models/inventory_model.dart';
 import 'package:torn_pda/models/items_model.dart';
-import 'package:torn_pda/models/own_profile_model.dart';
-import 'package:torn_pda/models/travel_model.dart';
-import 'package:torn_pda/models/profile_model.dart';
+import 'package:torn_pda/models/profile/own_profile_misc.dart';
+import 'package:torn_pda/models/profile/own_profile_model.dart';
+import 'package:torn_pda/models/travel/travel_model.dart';
 
 enum ApiType {
   user,
@@ -19,14 +22,17 @@ enum ApiType {
 
 enum ApiSelection {
   travel,
-  profile,
   ownProfile,
+  ownProfileMisc,
   target,
   attacks,
   attacksFull,
   chainStatus,
   bars,
   items,
+  inventory,
+  education,
+  friends,
 }
 
 class ApiError {
@@ -35,44 +41,45 @@ class ApiError {
   ApiError({int errorId}) {
     switch (errorId) {
       case 0:
-        errorReason = 'Unknown error';
+        errorReason = 'no connection';
         break;
       case 1:
-        errorReason = 'Key is empty';
+        errorReason = 'key is empty';
         break;
       case 2:
-        errorReason = 'Incorrect Key';
+        errorReason = 'incorrect Key';
         break;
       case 3:
-        errorReason = 'Wrong type';
+        errorReason = 'wrong type';
         break;
       case 4:
-        errorReason = 'Wrong fields';
+        errorReason = 'wrong fields';
         break;
       case 5:
-        errorReason = 'Too many requests';
+        errorReason = 'too many requests';
         break;
       case 6:
-        errorReason = 'Incorrect ID';
+        errorReason = 'incorrect ID';
         break;
       case 7:
-        errorReason = 'Incorrect ID-entity relation';
+        errorReason = 'incorrect ID-entity relation';
         break;
       case 8:
         errorReason = 'IP block';
         break;
       case 9:
-        errorReason = 'API disabled';
+        errorReason = 'API disabled (probably under maintenance by Torn\'s '
+            'developers)!';
         break;
       case 10:
-        errorReason = 'Key owner is in federal jail';
+        errorReason = 'key owner is in federal jail';
         break;
       case 11:
-        errorReason = 'Key change error: You can only '
+        errorReason = 'key change error: You can only '
             'change your API key once every 60 seconds';
         break;
       case 12:
-        errorReason = 'Key read error: Error reading key from Database';
+        errorReason = 'key read error: Error reading key from Database';
         break;
     }
   }
@@ -80,16 +87,19 @@ class ApiError {
 
 class TornApiCaller {
   String apiKey;
-  String targetID;
+  String queryId;
 
   TornApiCaller.travel(this.apiKey);
-  TornApiCaller.profile(this.apiKey);
   TornApiCaller.ownProfile(this.apiKey);
-  TornApiCaller.target(this.apiKey, this.targetID);
+  TornApiCaller.ownProfileMisc(this.apiKey);
+  TornApiCaller.target(this.apiKey, this.queryId);
   TornApiCaller.attacks(this.apiKey);
   TornApiCaller.chain(this.apiKey);
   TornApiCaller.bars(this.apiKey);
   TornApiCaller.items(this.apiKey);
+  TornApiCaller.inventory(this.apiKey);
+  TornApiCaller.education(this.apiKey);
+  TornApiCaller.friends(this.apiKey, this.queryId);
 
   Future<dynamic> get getTravel async {
     dynamic apiResult;
@@ -99,19 +109,6 @@ class TornApiCaller {
     });
     if (apiResult is http.Response) {
       return TravelModel.fromJson(json.decode(apiResult.body));
-    } else if (apiResult is ApiError) {
-      return apiResult;
-    }
-  }
-
-  Future<dynamic> get getProfile async {
-    dynamic apiResult;
-    await _apiCall(ApiType.user, apiSelection: ApiSelection.profile)
-        .then((value) {
-      apiResult = value;
-    });
-    if (apiResult is http.Response) {
-      return ProfileModel.fromJson(json.decode(apiResult.body));
     } else if (apiResult is ApiError) {
       return apiResult;
     }
@@ -130,10 +127,23 @@ class TornApiCaller {
     }
   }
 
+  Future<dynamic> get getOwnProfileMisc async {
+    dynamic apiResult;
+    await _apiCall(ApiType.user, apiSelection: ApiSelection.ownProfileMisc)
+        .then((value) {
+      apiResult = value;
+    });
+    if (apiResult is http.Response) {
+      return OwnProfileMiscModel.fromJson(json.decode(apiResult.body));
+    } else if (apiResult is ApiError) {
+      return apiResult;
+    }
+  }
+
   Future<dynamic> get getTarget async {
     dynamic apiResult;
     await _apiCall(ApiType.user,
-            prefix: this.targetID, apiSelection: ApiSelection.target)
+            prefix: this.queryId, apiSelection: ApiSelection.target)
         .then((value) {
       apiResult = value;
     });
@@ -220,6 +230,58 @@ class TornApiCaller {
     }
   }
 
+  Future<dynamic> get getInventory async {
+    dynamic apiResult;
+    await _apiCall(ApiType.user, apiSelection: ApiSelection.inventory)
+        .then((value) {
+      apiResult = value;
+    });
+    if (apiResult is http.Response) {
+      try {
+        return InventoryModel.fromJson(json.decode(apiResult.body));
+      } catch (e) {
+        return ApiError();
+      }
+    } else if (apiResult is ApiError) {
+      return apiResult;
+    }
+  }
+
+  Future<dynamic> get getEducation async {
+    dynamic apiResult;
+    await _apiCall(ApiType.torn, apiSelection: ApiSelection.education)
+        .then((value) {
+      apiResult = value;
+    });
+    if (apiResult is http.Response) {
+      try {
+        return TornEducationModel.fromJson(json.decode(apiResult.body));
+      } catch (e) {
+        return ApiError();
+      }
+    } else if (apiResult is ApiError) {
+      return apiResult;
+    }
+  }
+
+  Future<dynamic> get getFriends async {
+    dynamic apiResult;
+    await _apiCall(ApiType.user,
+            prefix: this.queryId, apiSelection: ApiSelection.friends)
+        .then((value) {
+      apiResult = value;
+    });
+    if (apiResult is http.Response) {
+      try {
+        return FriendModel.fromJson(json.decode(apiResult.body));
+      } catch (e) {
+        return ApiError();
+      }
+    } else if (apiResult is ApiError) {
+      return apiResult;
+    }
+  }
+
   Future<dynamic> _apiCall(ApiType apiType,
       {String prefix, ApiSelection apiSelection}) async {
     String url = 'https://api.torn.com/';
@@ -239,14 +301,15 @@ class TornApiCaller {
       case ApiSelection.travel:
         url += '?selections=travel';
         break;
-      case ApiSelection.profile:
-        url += '?selections=profile';
-        break;
       case ApiSelection.ownProfile:
-        url += '?selections=profile,bars,networth,cooldowns,events';
+        url += '?selections=profile,bars,networth,cooldowns,events,travel,icons,'
+            'money,education,messages';
+        break;
+      case ApiSelection.ownProfileMisc:
+        url += '?selections=money,education,workstats,battlestats';
         break;
       case ApiSelection.target:
-        url += '$prefix?selections=';
+        url += '$prefix?selections=profile,discord';
         break;
       case ApiSelection.attacks:
         url += '$prefix?selections=attacks';
@@ -262,6 +325,15 @@ class TornApiCaller {
         break;
       case ApiSelection.items:
         url += '?selections=items';
+        break;
+      case ApiSelection.inventory:
+        url += '?selections=inventory';
+        break;
+      case ApiSelection.education:
+        url += '?selections=education';
+        break;
+      case ApiSelection.friends:
+        url += '$prefix?selections=profile,discord';
         break;
     }
     url += '&key=$apiKey';

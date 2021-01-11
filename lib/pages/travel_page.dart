@@ -1,23 +1,32 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:bot_toast/bot_toast.dart';
 import 'package:flutter/foundation.dart';
-import 'package:intl/intl.dart';
+import 'package:torn_pda/utils/speed_dial/speed_dial.dart';
+import 'package:torn_pda/utils/speed_dial/speed_dial_child.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:percent_indicator/linear_percent_indicator.dart';
 import 'package:provider/provider.dart';
 import 'package:torn_pda/pages/travel/foreign_stock_page.dart';
+import 'package:torn_pda/pages/travel/travel_options_android.dart';
+import 'package:torn_pda/pages/travel/travel_options_ios.dart';
 import 'package:torn_pda/providers/settings_provider.dart';
 import 'package:torn_pda/providers/theme_provider.dart';
-import 'package:torn_pda/widgets/webview_travel.dart';
+import 'package:torn_pda/providers/user_details_provider.dart';
+import 'package:torn_pda/utils/time_formatter.dart';
+import 'package:torn_pda/widgets/webviews/webview_full.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:torn_pda/models/travel_model.dart';
+import 'package:torn_pda/models/travel/travel_model.dart';
 import 'package:android_intent/android_intent.dart';
 import 'package:torn_pda/main.dart';
 import 'package:torn_pda/utils/api_caller.dart';
 import 'package:torn_pda/utils/shared_prefs.dart';
 import 'package:animations/animations.dart';
+import 'package:timezone/timezone.dart' as tz;
+import 'package:torn_pda/widgets/webviews/webview_dialog.dart';
 
 class TravelPage extends StatefulWidget {
   TravelPage({Key key}) : super(key: key);
@@ -26,19 +35,27 @@ class TravelPage extends StatefulWidget {
   _TravelPageState createState() => _TravelPageState();
 }
 
-class _TravelPageState extends State<TravelPage> {
+class _TravelPageState extends State<TravelPage> with WidgetsBindingObserver {
   TravelModel _travelModel = TravelModel();
   Timer _ticker;
+
+  int _apiRetries = 0;
+
+  bool dialVisible = true;
 
   ThemeProvider _themeProvider;
   SettingsProvider _settingsProvider;
 
-  int _notificationsPendingNumber;
+  bool _notificationsPending = false;
   bool _alarmSound = false;
   bool _alarmVibration = true;
 
+  int _travelNotificationAhead;
+  int _travelAlarmAhead;
+  int _travelTimerAhead;
+
   String _myCurrentKey = '';
-  bool _apiError = false;
+  bool _apiError = true;
   String _errorReason = '';
 
   var _notificationFormKey = GlobalKey<FormState>();
@@ -53,112 +70,389 @@ class _TravelPageState extends State<TravelPage> {
   @override
   void initState() {
     super.initState();
-    _requestIOSPermissions();
-
-    _finishedLoadingPreferences = _restoreSharedPreferences();
-
+    _settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
+    WidgetsBinding.instance.addObserver(this);
+    _finishedLoadingPreferences = _restorePreferences();
     _retrievePendingNotifications();
-
     _ticker = new Timer.periodic(
         Duration(seconds: 10), (Timer t) => _updateInformation());
-  }
-
-  void _requestIOSPermissions() {
-    flutterLocalNotificationsPlugin
-        .resolvePlatformSpecificImplementation<
-            IOSFlutterLocalNotificationsPlugin>()
-        ?.requestPermissions(
-          alert: true,
-          badge: true,
-          sound: true,
-        );
+    analytics
+        .logEvent(name: 'section_changed', parameters: {'section': 'travel'});
   }
 
   @override
   void dispose() {
     _ticker?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) async {
+    if (state == AppLifecycleState.resumed) {
+      _updateInformation();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     _themeProvider = Provider.of<ThemeProvider>(context, listen: true);
-    _settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
-    return Stack(
-      // Stack for FAB ripple
-      children: <Widget>[
-        Scaffold(
-          drawer: Drawer(),
-          appBar: AppBar(
-            leading: IconButton(
-              icon: Icon(Icons.dehaze),
-              onPressed: () {
-                final ScaffoldState scaffoldState =
-                    context.findRootAncestorStateOfType();
-                scaffoldState.openDrawer();
-              },
-            ),
-            title: Text('Travel'),
-            actions: <Widget>[
-              IconButton(
-                icon: Icon(Icons.textsms),
-                onPressed: () {
-                  _notificationTitleController.text = _notificationTitle;
-                  _notificationBodyController.text = _notificationBody;
-                  _showNotificationTextDialog(context);
-                },
-              ),
-            ],
-          ),
-          body: Center(
-            child: SingleChildScrollView(
-                child: FutureBuilder(
-              future: _finishedLoadingPreferences,
-              builder: (BuildContext context, AsyncSnapshot<dynamic> snapshot) {
-                if (snapshot.connectionState == ConnectionState.done) {
-                  return Column(
-                    children: _travelMain(),
-                  );
-                } else {
-                  return Padding(
-                    padding: EdgeInsets.all(10),
-                    child: CircularProgressIndicator(),
-                  );
-                }
-              },
-            )),
-          ),
-          floatingActionButtonLocation: _travelModel.travelling
-              ? FloatingActionButtonLocation.endFloat
-              : FloatingActionButtonLocation.centerFloat,
-          floatingActionButton: OpenContainer(
-            transitionDuration: Duration(seconds: 1),
-            transitionType: ContainerTransitionType.fadeThrough,
-            openBuilder: (BuildContext context, VoidCallback _) {
-              return ForeignStockPage(apiKey: _myCurrentKey);
-            },
-            closedElevation: 6.0,
-            closedShape: const RoundedRectangleBorder(
-              borderRadius: BorderRadius.all(
-                Radius.circular(56 / 2),
-              ),
-            ),
-            closedColor: Colors.orange,
-            closedBuilder: (BuildContext context, VoidCallback openContainer) {
-              return SizedBox(
-                height: 56,
-                width: 56,
-                child: Center(
-                  child: Image.asset(
-                    'images/icons/box.png',
-                    width: 24,
-                  ),
-                ),
-              );
+    return Scaffold(
+      drawer: Drawer(),
+      appBar: _settingsProvider.appBarTop ? buildAppBar() : null,
+      bottomNavigationBar: !_settingsProvider.appBarTop
+          ? SizedBox(
+              height: AppBar().preferredSize.height,
+              child: buildAppBar(),
+            )
+          : null,
+      body: Center(
+        child: SingleChildScrollView(
+          child: FutureBuilder(
+            future: _finishedLoadingPreferences,
+            builder: (BuildContext context, AsyncSnapshot<dynamic> snapshot) {
+              if (snapshot.connectionState == ConnectionState.done) {
+                return Column(
+                  children: _travelMain(),
+                );
+              } else {
+                return Padding(
+                  padding: EdgeInsets.all(10),
+                  child: CircularProgressIndicator(),
+                );
+              }
             },
           ),
         ),
+      ),
+      floatingActionButtonAnimator: FabOverrideAnimation(),
+      floatingActionButtonLocation: _travelModel.travelling
+          ? FloatingActionButtonLocation.endFloat
+          : FloatingActionButtonLocation.centerFloat,
+      floatingActionButton: FutureBuilder(
+        future: _finishedLoadingPreferences,
+        builder: (BuildContext context, AsyncSnapshot<dynamic> snapshot) {
+          if (snapshot.connectionState == ConnectionState.done) {
+            if (_travelModel.travelling) {
+              return buildSpeedDial();
+            } else {
+              return OpenContainer(
+                transitionDuration: Duration(seconds: 1),
+                transitionType: ContainerTransitionType.fadeThrough,
+                openBuilder: (BuildContext context, VoidCallback _) {
+                  return ForeignStockPage(apiKey: _myCurrentKey);
+                },
+                closedElevation: 6.0,
+                closedShape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.all(
+                    Radius.circular(56 / 2),
+                  ),
+                ),
+                onClosed: (ReturnFlagPressed returnFlag) async {
+                  if (returnFlag.flagPressed) {
+                    if (returnFlag.shortTap) {
+                      _settingsProvider.useQuickBrowser
+                          ? openBrowserDialog(
+                              context,
+                              'https://www.torn.com/travelagency.php',
+                              callBack: _updateInformation,
+                            )
+                          : _openTornBrowser(
+                              'https://www.torn.com/travelagency.php');
+                    } else {
+                      _openTornBrowser('https://www.torn.com/travelagency.php');
+                    }
+                  }
+                },
+                closedColor: Colors.orange,
+                closedBuilder:
+                    (BuildContext context, VoidCallback openContainer) {
+                  return SizedBox(
+                    height: 56,
+                    width: 56,
+                    child: Center(
+                      child: Image.asset(
+                        'images/icons/box.png',
+                        width: 24,
+                      ),
+                    ),
+                  );
+                },
+              );
+            }
+          } else {
+            return SizedBox.shrink();
+          }
+        },
+      ),
+    );
+  }
+
+  AppBar buildAppBar() {
+    return AppBar(
+      elevation: _settingsProvider.appBarTop ? 2 : 0,
+      brightness: Brightness.dark,
+      leading: IconButton(
+        icon: Icon(Icons.dehaze),
+        onPressed: () {
+          final ScaffoldState scaffoldState =
+              context.findRootAncestorStateOfType();
+          scaffoldState.openDrawer();
+        },
+      ),
+      title: Text('Travel'),
+      actions: <Widget>[
+        if (Platform.isAndroid)
+          IconButton(
+            icon: Icon(
+              Icons.alarm_on,
+              color: _themeProvider.buttonText,
+            ),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) {
+                    return TravelOptionsAndroid(
+                      callback: _callBackFromTravelOptions,
+                    );
+                  },
+                ),
+              );
+            },
+          )
+        else if (Platform.isIOS)
+          IconButton(
+            icon: Icon(
+              Icons.alarm_on,
+              color: _themeProvider.buttonText,
+            ),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) {
+                    return TravelOptionsIOS(
+                      callback: _callBackFromTravelOptions,
+                    );
+                  },
+                ),
+              );
+            },
+          )
+        else
+          SizedBox.shrink(),
+        IconButton(
+          icon: Icon(Icons.textsms),
+          onPressed: () {
+            _notificationTitleController.text = _notificationTitle;
+            _notificationBodyController.text = _notificationBody;
+            _showNotificationTextDialog(context);
+          },
+        ),
       ],
+    );
+  }
+
+  SpeedDial buildSpeedDial() {
+    var dials = <SpeedDialChild>[];
+
+    var dialStocks = SpeedDialChild(
+      label: 'STOCKS',
+      labelStyle: TextStyle(
+        fontWeight: FontWeight.w500,
+        color: Colors.black,
+      ),
+      labelBackgroundColor: Colors.orange,
+      child: OpenContainer(
+        transitionDuration: Duration(seconds: 1),
+        transitionType: ContainerTransitionType.fadeThrough,
+        openBuilder: (BuildContext context, VoidCallback _) {
+          return ForeignStockPage(apiKey: _myCurrentKey);
+        },
+        onClosed: (ReturnFlagPressed returnFlag) async {
+          if (returnFlag.flagPressed) {
+            if (returnFlag.shortTap) {
+              _settingsProvider.useQuickBrowser
+                  ? openBrowserDialog(
+                      context,
+                      'https://www.torn.com/travelagency.php',
+                      callBack: _updateInformation,
+                    )
+                  : _openTornBrowser('https://www.torn.com/travelagency.php');
+            } else {
+              _openTornBrowser('https://www.torn.com/travelagency.php');
+            }
+          }
+        },
+        closedElevation: 6.0,
+        closedShape: CircleBorder(),
+        closedColor: Colors.orange,
+        closedBuilder: (BuildContext context, VoidCallback openContainer) {
+          return SizedBox(
+            height: 56,
+            width: 56,
+            child: Center(
+              child: Image.asset(
+                'images/icons/box.png',
+                width: 24,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    var dialNotificationSet = SpeedDialChild(
+      child: Icon(
+        Icons.chat_bubble_outline,
+        color: Colors.black,
+      ),
+      backgroundColor: Colors.green,
+      onTap: () async {
+        await _scheduleNotification().then((value) {
+          String formattedTime = _formatTime(value);
+          BotToast.showText(
+            text: "Notification set for $formattedTime",
+            textStyle: TextStyle(
+              fontSize: 14,
+              color: Colors.white,
+            ),
+            contentColor: Colors.green,
+            duration: Duration(seconds: 3),
+            contentPadding: EdgeInsets.all(10),
+          );
+        });
+      },
+      label: 'Set notification',
+      labelStyle: TextStyle(
+        fontWeight: FontWeight.w500,
+        color: Colors.black,
+      ),
+      labelBackgroundColor: Colors.green,
+    );
+
+    var dialNotificationCancel = SpeedDialChild(
+      child: Icon(
+        Icons.chat_bubble_outline,
+        color: Colors.black,
+      ),
+      backgroundColor: Colors.red,
+      onTap: () async {
+        await _cancelTravelNotification();
+        BotToast.showText(
+          text: "Notification cancelled!",
+          textStyle: TextStyle(
+            fontSize: 14,
+            color: Colors.black,
+          ),
+          contentColor: Colors.orange[700],
+          duration: Duration(seconds: 3),
+          contentPadding: EdgeInsets.all(10),
+        );
+      },
+      label: 'Cancel notification',
+      labelStyle: TextStyle(
+        fontWeight: FontWeight.w500,
+        color: Colors.black,
+      ),
+      labelBackgroundColor: Colors.red,
+    );
+
+    var dialAlarm = SpeedDialChild(
+      child: Icon(
+        Icons.notifications_none,
+        color: Colors.black,
+      ),
+      backgroundColor: Colors.grey[400],
+      onTap: () async {
+        await _setAlarm().then((value) {
+          String formattedTime = _formatTime(value);
+          BotToast.showText(
+            text: 'Alarm set for $formattedTime!',
+            textStyle: TextStyle(
+              fontSize: 14,
+              color: Colors.white,
+            ),
+            contentColor: Colors.green,
+            duration: Duration(seconds: 3),
+            contentPadding: EdgeInsets.all(10),
+          );
+        });
+      },
+      label: 'Set alarm',
+      labelStyle: TextStyle(
+        fontWeight: FontWeight.w500,
+        color: Colors.black,
+      ),
+      labelBackgroundColor: Colors.grey[400],
+    );
+
+    var dialTimer = SpeedDialChild(
+      child: Icon(
+        Icons.timer,
+        color: Colors.black,
+      ),
+      backgroundColor: Colors.grey[400],
+      onTap: () async {
+        await _setTimer().then((value) {
+          String formattedTime = _formatTime(value);
+          BotToast.showText(
+            text: "Timer set for $formattedTime",
+            textStyle: TextStyle(
+              fontSize: 14,
+              color: Colors.white,
+            ),
+            contentColor: Colors.green,
+            duration: Duration(seconds: 3),
+            contentPadding: EdgeInsets.all(10),
+          );
+        });
+      },
+      label: 'Set timer',
+      labelStyle: TextStyle(
+        fontWeight: FontWeight.w500,
+        color: Colors.black,
+      ),
+      labelBackgroundColor: Colors.grey[400],
+    );
+
+    // We always add stocks
+    dials.add(dialStocks);
+
+    if (_travelModel.travelling && _travelModel.timeLeft > 120) {
+      if (_notificationsPending) {
+        dials.add(dialNotificationCancel);
+      } else {
+        dials.add(dialNotificationSet);
+      }
+
+      if (Platform.isAndroid) {
+        dials.add(dialAlarm);
+        dials.add(dialTimer);
+      }
+    }
+
+    return SpeedDial(
+      elevation: 2,
+      backgroundColor: Colors.transparent,
+      overlayColor: Colors.transparent,
+      child: Container(
+        child: Icon(
+          Icons.airplanemode_active,
+          color: Colors.black,
+          size: 30,
+        ),
+        width: 58,
+        height: 58,
+        decoration: new BoxDecoration(
+          color: Colors.orange,
+          shape: BoxShape.circle,
+        ),
+      ),
+      visible: dialVisible,
+      curve: Curves.bounceIn,
+      children: dials,
     );
   }
 
@@ -191,9 +485,9 @@ class _TravelPageState extends State<TravelPage> {
           child: Column(
             children: <Widget>[
               Padding(
-                padding: EdgeInsetsDirectional.only(bottom: 30),
+                padding: EdgeInsetsDirectional.only(bottom: 15),
                 child: Text(
-                  "ERROR LOADING USER",
+                  "ERROR CONTACTING TORN",
                   style: TextStyle(
                     color: Colors.red,
                     fontWeight: FontWeight.bold,
@@ -201,6 +495,10 @@ class _TravelPageState extends State<TravelPage> {
                 ),
               ),
               Text("Error: $_errorReason"),
+              SizedBox(height: 40),
+              Text("You can still try to visit the website:"),
+              SizedBox(height: 10),
+              _travelAgencyButton(),
             ],
           ),
         ),
@@ -228,33 +526,21 @@ class _TravelPageState extends State<TravelPage> {
           ),
           RaisedButton(
             child: Text("Go visit!"),
+            onLongPress: () {
+              _openTornBrowser('https://www.torn.com/');
+            },
             onPressed: () async {
-              var browserType = _settingsProvider.currentBrowser;
-              switch (browserType) {
-                case BrowserSetting.app:
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (BuildContext context) => TornWebViewTravel(
-                        webViewType: WebViewTypeTravel.generic,
-                        genericTitle: '${_travelModel.destination}',
-                        genericCallBack: _updateInformation,
-                      ),
-                    ),
-                  );
-                  break;
-                case BrowserSetting.external:
-                  var url = 'https://www.torn.com/';
-                  if (await canLaunch(url)) {
-                    await launch(url, forceSafariVC: false);
-                  }
-                  break;
-              }
+              _settingsProvider.useQuickBrowser
+                  ? openBrowserDialog(
+                      context,
+                      'https://www.torn.com/',
+                      callBack: _updateInformation,
+                    )
+                  : _openTornBrowser('https://www.torn.com/');
             },
           ),
         ];
-      } else if (_travelModel.destination != 'Torn' &&
-          _travelModel.timeLeft > 0 &&
-          _travelModel.timeLeft < 120) {
+      } else if (_travelModel.timeLeft > 0 && _travelModel.timeLeft < 120) {
         // We are about to reach another country
         return <Widget>[
           Padding(
@@ -277,37 +563,45 @@ class _TravelPageState extends State<TravelPage> {
           ),
           RaisedButton(
             child: Icon(Icons.local_airport),
+            onLongPress: () {
+              _openTornBrowser('https://www.torn.com/');
+            },
             onPressed: () async {
-              var browserType = _settingsProvider.currentBrowser;
-              switch (browserType) {
-                case BrowserSetting.app:
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (BuildContext context) => TornWebViewTravel(
-                        webViewType: WebViewTypeTravel.generic,
-                        genericTitle: '${_travelModel.destination}',
-                        genericCallBack: _updateInformation,
-                      ),
-                    ),
-                  );
-                  break;
-                case BrowserSetting.external:
-                  var url = 'https://www.torn.com/';
-                  if (await canLaunch(url)) {
-                    await launch(url, forceSafariVC: false);
-                  }
-                  break;
-              }
+              _settingsProvider.useQuickBrowser
+                  ? openBrowserDialog(
+                      context,
+                      'https://www.torn.com/',
+                      callBack: _updateInformation,
+                    )
+                  : _openTornBrowser('https://www.torn.com/');
             },
           ),
         ];
       } else {
         // We are flying somewhere (another country or TORN)
-        var formatter = new DateFormat('HH:mm:ss');
-        String formattedTime = formatter.format(_travelModel.timeArrival);
+
+        // Time formatting
+        var formattedTime = TimeFormatter(
+          inputTime: _travelModel.timeArrival,
+          timeFormatSetting: _settingsProvider.currentTimeFormat,
+          timeZoneSetting: _settingsProvider.currentTimeZone,
+        ).format;
+
+        // Calculations for travel bar
+        var startTime = _travelModel.departed;
+        var endTime = _travelModel.timeStamp;
+        var totalSeconds = endTime - startTime;
+        var dateTimeArrival = _travelModel.timeArrival;
+        var timeDifference = dateTimeArrival.difference(DateTime.now());
+        String twoDigits(int n) => n.toString().padLeft(2, "0");
+        String twoDigitMinutes =
+            twoDigits(timeDifference.inMinutes.remainder(60));
+        String diff =
+            '${twoDigits(timeDifference.inHours)}h ${twoDigitMinutes}m';
+
         return <Widget>[
           Padding(
-            padding: EdgeInsetsDirectional.only(top: 50, bottom: 30),
+            padding: EdgeInsetsDirectional.only(bottom: 30),
             child: _flagImage(),
           ),
           Padding(
@@ -322,62 +616,70 @@ class _TravelPageState extends State<TravelPage> {
             ),
           ),
           Text(
-            'Arriving in ${_travelModel.destination} at: \n',
-          ),
-          Text(
-            '$formattedTime LT',
+            'Arriving in ${_travelModel.destination} at:',
           ),
           Padding(
-            padding: EdgeInsetsDirectional.only(top: 20, bottom: 20),
-            child: Divider(),
-          ),
-          Text(
-            'NOTIFICATION',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
+            padding: const EdgeInsets.all(8.0),
+            child: Text(
+              '$formattedTime',
             ),
           ),
-          Padding(
-            padding: EdgeInsetsDirectional.only(
-                top: 10, bottom: 15, start: 30, end: 30),
-            child: Text("This will launch a standard notification "
-                "20 seconds before arriving to destination."),
-          ),
-          _notificationNumberText(),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: <Widget>[
-              Builder(
-                builder: (ctx) => RaisedButton(
-                  child: Text("Notify"),
-                  onPressed: () async {
-                    await _scheduleNotification().then((value) {
-                      var formatter = new DateFormat('HH:mm:ss');
-                      String formattedTime = formatter.format(value);
-                      Scaffold.of(ctx).showSnackBar(SnackBar(
-                        content: Text('Notification set for $formattedTime'),
-                      ));
-                    });
-                  },
+              GestureDetector(
+                onLongPress: () {
+                  _openTornBrowser('https://www.torn.com/');
+                },
+                onTap: () async {
+                  _settingsProvider.useQuickBrowser
+                      ? openBrowserDialog(
+                          context,
+                          'https://www.torn.com/',
+                          callBack: _updateInformation,
+                        )
+                      : _openTornBrowser('https://www.torn.com/');
+                },
+                child: LinearPercentIndicator(
+                  isRTL: _travelModel.destination == "Torn" ? true : false,
+                  center: Text(
+                    diff,
+                    style: TextStyle(
+                      color: Colors.black,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  widgetIndicator: Opacity(
+                    // Make icon transparent when about to pass over text
+                    opacity: _getTravelPercentage(totalSeconds) < 0.2 ||
+                            _getTravelPercentage(totalSeconds) > 0.7
+                        ? 1
+                        : 0.3,
+                    child: Padding(
+                      padding: _travelModel.destination == "Torn"
+                          ? const EdgeInsets.only(top: 6, right: 6)
+                          : const EdgeInsets.only(top: 6, left: 10),
+                      child: RotatedBox(
+                        quarterTurns:
+                            _travelModel.destination == "Torn" ? 3 : 1,
+                        child: Icon(
+                          Icons.airplanemode_active,
+                          color: Colors.blue[900],
+                        ),
+                      ),
+                    ),
+                  ),
+                  animateFromLastPercent: true,
+                  animation: true,
+                  width: 200,
+                  lineHeight: 18,
+                  progressColor: Colors.blue[200],
+                  backgroundColor: Colors.grey,
+                  percent: _getTravelPercentage(totalSeconds),
                 ),
-              ),
-              Padding(padding: EdgeInsetsDirectional.only(start: 15)),
-              Builder(
-                builder: (ctx) => RaisedButton(
-                    child: Text("Cancel"),
-                    onPressed: () async {
-                      await _cancelAllNotifications();
-                      Scaffold.of(ctx).showSnackBar(SnackBar(
-                        content: Text('Notifications cancelled!'),
-                      ));
-                    }),
               ),
             ],
           ),
-          _conditionalAlarm(),
-          _conditionalTimer(),
-          SizedBox(height: 90),
         ];
       }
     } else {
@@ -409,206 +711,40 @@ class _TravelPageState extends State<TravelPage> {
                 ),
               ),
             ),
-            RaisedButton(
-              child: Text("Travel Agency"),
-              onPressed: () async {
-                var browserType = _settingsProvider.currentBrowser;
-                switch (browserType) {
-                  case BrowserSetting.app:
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (BuildContext context) => TornWebViewTravel(
-                          webViewType: WebViewTypeTravel.travelAgency,
-                          genericCallBack: _updateInformation,
-                        ),
-                      ),
-                    );
-                    break;
-                  case BrowserSetting.external:
-                    var url = 'https://www.torn.com/travelagency.php';
-                    if (await canLaunch(url)) {
-                      await launch(url, forceSafariVC: false);
-                    }
-                    break;
-                }
-              },
-            ),
-
-            // Old buttons going to database apps. Keeping here in case
-            // something goes bad with shared database
-            /*
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Divider(),
-            ),
-            RaisedButton(
-              child: Text("DoctorN"),
-              onPressed: () async {
-                var browserType = _settingsProvider.currentBrowser;
-                switch (browserType) {
-                  case BrowserSetting.app:
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (BuildContext context) => TornWebViewTravel(
-                          webViewType: WebViewTypeTravel.docTorn,
-                        ),
-                      ),
-                    );
-                    break;
-                  case BrowserSetting.external:
-                    var url = 'https://doctorn.rocks/travel-hub/';
-                    if (await canLaunch(url)) {
-                      await launch(url, forceSafariVC: false);
-                    }
-                    break;
-                }
-              },
-            ),
-            RaisedButton(
-              child: Text("Arson Warehouse"),
-              onPressed: () async {
-                var browserType = _settingsProvider.currentBrowser;
-                switch (browserType) {
-                  case BrowserSetting.app:
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (BuildContext context) => TornWebViewTravel(
-                          webViewType: WebViewTypeTravel.arsonWarehouse,
-                        ),
-                      ),
-                    );
-                    break;
-                  case BrowserSetting.external:
-                    var url = 'https://arsonwarehouse.com/foreign-stock';
-                    if (await canLaunch(url)) {
-                      await launch(url, forceSafariVC: false);
-                    }
-                    break;
-                }
-              },
-            ),
-            SizedBox(height: 0),
-            */
+            _travelAgencyButton(),
           ],
         )
       ];
     }
   }
 
-  Widget _conditionalAlarm() {
-    if (Platform.isAndroid) {
-      return Column(
-        children: <Widget>[
-          Padding(
-            padding: EdgeInsetsDirectional.only(top: 20, bottom: 20),
-            child: Divider(),
-          ),
-          Text(
-            'ALARM',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          Padding(
-            padding: EdgeInsetsDirectional.only(
-                top: 10, bottom: 10, start: 30, end: 30),
-            child: Text("This will schedule a standard Android phone alarm, "
-                "rounded to the minute before arriving."),
-          ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              Switch(
-                value: _alarmSound,
-                onChanged: (value) {
-                  setState(() {
-                    _alarmSound = value;
-                  });
-                },
-                activeTrackColor: Colors.lightGreenAccent,
-                activeColor: Colors.green,
-              ),
-              Text("Sound"),
-              Padding(
-                padding: EdgeInsetsDirectional.only(start: 10, end: 10),
-              ),
-              Switch(
-                value: _alarmVibration,
-                onChanged: (value) {
-                  setState(() {
-                    _alarmVibration = value;
-                  });
-                },
-                activeTrackColor: Colors.lightGreenAccent,
-                activeColor: Colors.green,
-              ),
-              Text("Vibration"),
-            ],
-          ),
-          Padding(
-            padding: EdgeInsetsDirectional.only(bottom: 10),
-          ),
-          Builder(
-            builder: (ctx) => RaisedButton(
-                child: Text("Set Alarm"),
-                onPressed: () async {
-                  _setAlarm();
-                  var formatter = new DateFormat('HH:mm');
-                  String formatted = formatter.format(_travelModel.timeArrival);
-                  Scaffold.of(ctx).showSnackBar(SnackBar(
-                    content: Text('Alarm set, at $formatted local time, '
-                        '${_travelModel.timeArrival.second} '
-                        'seconds before arrival!'),
-                  ));
-                }),
-          ),
-        ],
-      );
+  double _getTravelPercentage(int totalSeconds) {
+    double percentage = 1 - (_travelModel.timeLeft / totalSeconds);
+    if (percentage > 1) {
+      return 1;
+    } else if (percentage < 0) {
+      return 0;
     } else {
-      return SizedBox.shrink();
+      return percentage;
     }
   }
 
-  Widget _conditionalTimer() {
-    if (Platform.isAndroid) {
-      return Column(
-        children: <Widget>[
-          Padding(
-            padding: EdgeInsetsDirectional.only(top: 20, bottom: 20),
-            child: Divider(),
-          ),
-          Text(
-            'TIMER',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          Padding(
-            padding: EdgeInsetsDirectional.only(
-                top: 10, bottom: 15, start: 30, end: 30),
-            child: Text("This will launch an Android clock timer 20 seconds "
-                "before arriving to destination."),
-          ),
-          Builder(
-            builder: (ctx) => RaisedButton(
-                child: Text("Set Timer"),
-                onPressed: () async {
-                  _setTimer();
-                  var formatter = new DateFormat('HH:mm:ss');
-                  String formattedTime = formatter.format(
-                      _travelModel.timeArrival.subtract(Duration(seconds: 20)));
-                  Scaffold.of(ctx).showSnackBar(SnackBar(
-                    content: Text('Timer set for $formattedTime'),
-                  ));
-                }),
-          ),
-        ],
-      );
-    } else {
-      return SizedBox.shrink();
-    }
+  RaisedButton _travelAgencyButton() {
+    return RaisedButton(
+      child: Text("Travel Agency"),
+      onLongPress: () {
+        _openTornBrowser('https://www.torn.com/travelagency.php');
+      },
+      onPressed: () async {
+        _settingsProvider.useQuickBrowser
+            ? openBrowserDialog(
+                context,
+                'https://www.torn.com/travelagency.php',
+                callBack: _updateInformation,
+              )
+            : _openTornBrowser('https://www.torn.com/travelagency.php');
+      },
+    );
   }
 
   Widget _flagImage() {
@@ -657,23 +793,6 @@ class _TravelPageState extends State<TravelPage> {
       image: AssetImage(flagFile),
       width: 150,
     );
-  }
-
-  Widget _notificationNumberText() {
-    if (_notificationsPendingNumber == 0) {
-      return SizedBox.shrink();
-    } else {
-      return Padding(
-        padding: EdgeInsetsDirectional.only(bottom: 10),
-        child: Text(
-          'Notification active',
-          style: TextStyle(
-            color: Colors.green,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      );
-    }
   }
 
   Future<void> _showNotificationTextDialog(BuildContext _) {
@@ -785,12 +904,16 @@ class _TravelPageState extends State<TravelPage> {
                                     SharedPreferencesModel()
                                         .setTravelNotificationBody(
                                             _notificationBody);
-                                    Scaffold.of(_).showSnackBar(
-                                      SnackBar(
-                                        content: Text(
-                                          'Notification details changed!',
-                                        ),
+
+                                    BotToast.showText(
+                                      text: "Notification details changed!",
+                                      textStyle: TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.white,
                                       ),
+                                      contentColor: Colors.green,
+                                      duration: Duration(seconds: 3),
+                                      contentPadding: EdgeInsets.all(10),
                                     );
                                   }
                                 },
@@ -845,26 +968,40 @@ class _TravelPageState extends State<TravelPage> {
       _fetchTornApi();
     }
     _retrievePendingNotifications();
+
+    // Update timeLeft so that the percentage indicator and timer set time work correctly
+    if (_travelModel.timeArrival.isAfter(DateTime.now())) {
+      setState(() {
+        var diff = _travelModel.timeArrival.difference(DateTime.now());
+        _travelModel.timeLeft = diff.inSeconds;
+      });
+    }
   }
 
   Future<void> _fetchTornApi() async {
     var myTravel = await TornApiCaller.travel(_myCurrentKey).getTravel;
     if (myTravel is TravelModel) {
+      _apiRetries = 0;
       setState(() {
         _travelModel = myTravel;
         _apiError = false;
       });
     } else if (myTravel is ApiError) {
-      setState(() {
-        _apiError = true;
-        _errorReason = myTravel.errorReason;
-      });
+      if (!_apiError && _apiRetries < 4) {
+        _apiRetries++;
+      } else {
+        _apiRetries = 0;
+        setState(() {
+          _apiError = true;
+          _errorReason = myTravel.errorReason;
+        });
+      }
     }
   }
 
   Future<DateTime> _scheduleNotification() async {
-    var scheduledNotificationDateTime =
-        _travelModel.timeArrival.subtract(Duration(seconds: 20));
+    var scheduledNotificationDateTime = _travelModel.timeArrival
+        .subtract(Duration(seconds: _travelNotificationAhead));
     var vibrationPattern = Int64List(8);
     vibrationPattern[0] = 0;
     vibrationPattern[1] = 400;
@@ -876,17 +1013,17 @@ class _TravelPageState extends State<TravelPage> {
     vibrationPattern[7] = 1000;
 
     var androidPlatformChannelSpecifics = AndroidNotificationDetails(
-      'Travel', // TODO: several notification channels
+      'Travel',
       'Travel Full',
       'Urgent notifications about arriving to destination',
-      importance: Importance.Max,
-      priority: Priority.High,
-      visibility: NotificationVisibility.Public,
-      icon: 'notification_icon',
+      importance: Importance.max,
+      priority: Priority.high,
+      visibility: NotificationVisibility.public,
+      icon: 'notification_travel',
       sound: RawResourceAndroidNotificationSound('slow_spring_board'),
       vibrationPattern: vibrationPattern,
       enableLights: true,
-      //color: const Color.fromARGB(255, 255, 0, 0),
+      color: Colors.blue,
       ledColor: const Color.fromARGB(255, 255, 0, 0),
       ledOnMs: 1000,
       ledOffMs: 500,
@@ -897,37 +1034,61 @@ class _TravelPageState extends State<TravelPage> {
     );
 
     var platformChannelSpecifics = NotificationDetails(
-        androidPlatformChannelSpecifics, iOSPlatformChannelSpecifics);
+      android: androidPlatformChannelSpecifics,
+      iOS: iOSPlatformChannelSpecifics,
+    );
 
-    await flutterLocalNotificationsPlugin.schedule(
-      0,
+    await flutterLocalNotificationsPlugin.zonedSchedule(
+      201,
       _notificationTitle,
       _notificationBody,
-      //DateTime.now().add(Duration(seconds: 10)), // DEBUG 10 SECONDS
-      scheduledNotificationDateTime, // ^instead of this
+      //tz.TZDateTime.now(tz.local).add(const Duration(seconds: 5)), // DEBUG
+      tz.TZDateTime.from(scheduledNotificationDateTime, tz.local),
       platformChannelSpecifics,
       payload: 'travel',
       androidAllowWhileIdle: true, // Deliver at exact time
+      uiLocalNotificationDateInterpretation:
+          UILocalNotificationDateInterpretation.absoluteTime,
     );
+
+    // DEBUG
+    //print('Notification for travel @ '
+    //    '${tz.TZDateTime.from(scheduledNotificationDateTime, tz.local)}');
 
     _retrievePendingNotifications();
     return scheduledNotificationDateTime;
   }
 
-  Future<void> _cancelAllNotifications() async {
-    await flutterLocalNotificationsPlugin.cancelAll();
+  Future<void> _cancelTravelNotification() async {
+    await flutterLocalNotificationsPlugin.cancel(201);
     _retrievePendingNotifications();
   }
 
   Future<void> _retrievePendingNotifications() async {
     var pendingNotificationRequests =
         await flutterLocalNotificationsPlugin.pendingNotificationRequests();
+
+    var pending = false;
+    if (pendingNotificationRequests.length > 0) {
+      for (var notification in pendingNotificationRequests) {
+        if (notification.payload == 'travel') {
+          pending = true;
+          break;
+        }
+      }
+    }
+
     setState(() {
-      _notificationsPendingNumber = pendingNotificationRequests.length;
+      _notificationsPending = pending;
     });
   }
 
-  void _setAlarm() {
+  Future<DateTime> _setAlarm() async {
+    var alarmTime =
+        _travelModel.timeArrival.add(Duration(minutes: -_travelAlarmAhead));
+    int hour = alarmTime.hour;
+    int minute = alarmTime.minute;
+
     String thisSound;
     if (_alarmSound) {
       thisSound = '';
@@ -937,40 +1098,144 @@ class _TravelPageState extends State<TravelPage> {
     AndroidIntent intent = AndroidIntent(
       action: 'android.intent.action.SET_ALARM',
       arguments: <String, dynamic>{
-        'android.intent.extra.alarm.HOUR': _travelModel.timeArrival.hour,
-        'android.intent.extra.alarm.MINUTES': _travelModel.timeArrival.minute,
+        'android.intent.extra.alarm.HOUR': hour,
+        'android.intent.extra.alarm.MINUTES': minute,
         'android.intent.extra.alarm.SKIP_UI': true,
         'android.intent.extra.alarm.VIBRATE': _alarmVibration,
         'android.intent.extra.alarm.RINGTONE': thisSound,
-        'android.intent.extra.alarm.MESSAGE': 'TORN PDA',
+        'android.intent.extra.alarm.MESSAGE': 'TORN PDA Travel',
       },
     );
     intent.launch();
+
+    return alarmTime;
   }
 
-  void _setTimer() {
+  Future<DateTime> _setTimer() async {
     AndroidIntent intent = AndroidIntent(
       action: 'android.intent.action.SET_TIMER',
       arguments: <String, dynamic>{
-        'android.intent.extra.alarm.LENGTH': _travelModel.timeLeft - 20,
+        'android.intent.extra.alarm.LENGTH':
+            _travelModel.timeLeft - _travelTimerAhead,
         // 'android.intent.extra.alarm.LENGTH': 5,    // DEBUG
         'android.intent.extra.alarm.SKIP_UI': true,
-        'android.intent.extra.alarm.MESSAGE': 'TORN PDA',
+        'android.intent.extra.alarm.MESSAGE': 'TORN PDA Travel',
       },
     );
     intent.launch();
+
+    return DateTime.now()
+        .add(Duration(seconds: _travelModel.timeLeft - _travelTimerAhead));
   }
 
-  Future _restoreSharedPreferences() async {
-    String key = await SharedPreferencesModel().getApiKey();
-    if (key != '') {
-      _myCurrentKey = key;
+  Future _restorePreferences() async {
+    var userDetails = Provider.of<UserDetailsProvider>(context, listen: false);
+    _myCurrentKey = userDetails.myUser.userApiKey;
+    if (_myCurrentKey != '') {
       await _fetchTornApi();
     }
     _notificationTitle =
         await SharedPreferencesModel().getTravelNotificationTitle();
     _notificationBody =
         await SharedPreferencesModel().getTravelNotificationBody();
+    _alarmSound = await SharedPreferencesModel().getTravelAlarmSound();
+    _alarmVibration = await SharedPreferencesModel().getTravelAlarmVibration();
+
+    // Ahead timers
+    var notificationAhead =
+        await SharedPreferencesModel().getTravelNotificationAhead();
+    var alarmAhead = await SharedPreferencesModel().getTravelAlarmAhead();
+    var timerAhead = await SharedPreferencesModel().getTravelTimerAhead();
+
+    if (notificationAhead == '0') {
+      _travelNotificationAhead = 20;
+    } else if (notificationAhead == '1') {
+      _travelNotificationAhead = 40;
+    } else if (notificationAhead == '2') {
+      _travelNotificationAhead = 60;
+    } else if (notificationAhead == '3') {
+      _travelNotificationAhead = 120;
+    } else if (notificationAhead == '4') {
+      _travelNotificationAhead = 300;
+    }
+
+    if (alarmAhead == '0') {
+      _travelAlarmAhead = 0;
+    } else if (alarmAhead == '1') {
+      _travelAlarmAhead = 1;
+    } else if (alarmAhead == '2') {
+      _travelAlarmAhead = 2;
+    } else if (alarmAhead == '3') {
+      _travelAlarmAhead = 5;
+    }
+
+    if (timerAhead == '0') {
+      // Time left is recalculated each 10 seconds, so we give here 20 + 10 extra, as otherwise
+      // it's too tight. Worse case scenario: the user is quick and checks the travel screen when
+      // there are still 25-30 seconds to go. Best case, he still has 20 seconds to spare.
+      _travelTimerAhead = 30;
+    } else if (timerAhead == '1') {
+      // Same as above but 40 + 5 seconds. Timer triggers between 35-45 seconds.
+      _travelTimerAhead = 45;
+    } else if (timerAhead == '2') {
+      _travelTimerAhead = 60;
+    } else if (timerAhead == '3') {
+      _travelTimerAhead = 120;
+    } else if (timerAhead == '4') {
+      _travelTimerAhead = 300;
+    }
   }
 
+  String _formatTime(DateTime inputTime) {
+    return TimeFormatter(
+      inputTime: inputTime,
+      timeFormatSetting: _settingsProvider.currentTimeFormat,
+      timeZoneSetting: _settingsProvider.currentTimeZone,
+    ).format;
+  }
+
+  _callBackFromTravelOptions() async {
+    await _restorePreferences();
+  }
+
+  Future _openTornBrowser(String page) async {
+    var browserType = _settingsProvider.currentBrowser;
+
+    switch (browserType) {
+      case BrowserSetting.app:
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (BuildContext context) => WebViewFull(
+              customUrl: page,
+              customTitle: 'Torn',
+              customCallBack: _updateInformation,
+            ),
+          ),
+        );
+        break;
+      case BrowserSetting.external:
+        var url = page;
+        if (await canLaunch(url)) {
+          await launch(url, forceSafariVC: false);
+        }
+        break;
+    }
+  }
+}
+
+class FabOverrideAnimation extends FloatingActionButtonAnimator {
+  @override
+  Offset getOffset({Offset begin, Offset end, double progress}) {
+    return Offset(end.dx, end.dy);
+  }
+
+  @override
+  Animation<double> getRotationAnimation({Animation<double> parent}) {
+    return Tween<double>(begin: 1.0, end: 1.0).animate(parent);
+  }
+
+  @override
+  Animation<double> getScaleAnimation({Animation<double> parent}) {
+    return Tween<double>(begin: 1.0, end: 1.0).animate(parent);
+  }
 }

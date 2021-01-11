@@ -1,11 +1,17 @@
 import 'dart:collection';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:torn_pda/models/chaining/attack_full_model.dart';
 import 'package:torn_pda/models/chaining/target_backup_model.dart';
 import 'package:torn_pda/models/chaining/target_model.dart';
-import 'package:torn_pda/models/chaining/target_sort_popup.dart';
+import 'package:torn_pda/models/chaining/target_sort.dart';
+import 'package:torn_pda/models/chaining/yata/yata_distribution_models.dart';
+import 'package:torn_pda/models/chaining/yata/yata_targets_export.dart';
+import 'package:torn_pda/models/chaining/yata/yata_targets_import.dart';
+import 'package:torn_pda/models/profile/own_profile_model.dart';
 import 'package:torn_pda/utils/api_caller.dart';
 import 'package:torn_pda/utils/shared_prefs.dart';
+import 'package:http/http.dart' as http;
 
 class AddTargetResult {
   bool success;
@@ -13,11 +19,7 @@ class AddTargetResult {
   String targetId = "";
   String targetName = "";
 
-  AddTargetResult(
-      {@required this.success,
-      this.errorReason,
-      this.targetId,
-      this.targetName});
+  AddTargetResult({@required this.success, this.errorReason, this.targetId, this.targetName});
 }
 
 class UpdateTargetsResult {
@@ -26,32 +28,35 @@ class UpdateTargetsResult {
   int numberSuccessful;
 
   UpdateTargetsResult(
-      {@required this.success,
-      @required this.numberErrors,
-      @required this.numberSuccessful});
+      {@required this.success, @required this.numberErrors, @required this.numberSuccessful});
 }
 
 class TargetsProvider extends ChangeNotifier {
   List<TargetModel> _targets = [];
-  UnmodifiableListView<TargetModel> get allTargets =>
-      UnmodifiableListView(_targets);
+  UnmodifiableListView<TargetModel> get allTargets => UnmodifiableListView(_targets);
 
   List<TargetModel> _oldTargetsList = [];
 
   String _currentFilter = '';
   String get currentFilter => _currentFilter;
 
-  TargetSort _currentSort;
+  TargetSortType _currentSort;
 
-  String userKey = '';
-  TargetsProvider() {
-    restoreSharedPreferences();
+  String _userKey = '';
+
+  OwnProfileModel _userDetails;
+  TargetsProvider(this._userDetails) {
+    restorePreferences();
   }
 
   /// If providing [notes] or [notesColor], ensure that they are within 200
   /// chars and of an acceptable color (green, blue, red).
-  Future<AddTargetResult> addTarget(String targetId,
-      {String notes = '', String notesColor = ''}) async {
+  Future<AddTargetResult> addTarget({
+    @required String targetId,
+    @required dynamic attacksFull,
+    String notes = '',
+    String notesColor = '',
+  }) async {
     for (var tar in _targets) {
       if (tar.playerId.toString() == targetId) {
         return AddTargetResult(
@@ -61,11 +66,9 @@ class TargetsProvider extends ChangeNotifier {
       }
     }
 
-    dynamic myNewTargetModel =
-        await TornApiCaller.target(userKey, targetId).getTarget;
+    dynamic myNewTargetModel = await TornApiCaller.target(_userKey, targetId).getTarget;
 
     if (myNewTargetModel is TargetModel) {
-      dynamic attacksFull = await TornApiCaller.attacks(userKey).getAttacksFull;
       _getTargetRespect(attacksFull, myNewTargetModel);
       _getTargetFaction(myNewTargetModel);
       myNewTargetModel.personalNote = notes;
@@ -88,6 +91,13 @@ class TargetsProvider extends ChangeNotifier {
         errorReason: myError.errorReason,
       );
     }
+  }
+
+  /// The result of this needs to be passed to several functions, so that we don't need
+  /// to call several times if looping. Example: we can loop the addTarget method 100 times, but
+  /// the attackFull variable we provide is the same and we only requested it once.
+  dynamic getAttacksFull() async {
+    return await TornApiCaller.attacks(_userKey).getAttacksFull;
   }
 
   void _getTargetFaction(TargetModel myNewTargetModel) {
@@ -139,43 +149,52 @@ class TargetsProvider extends ChangeNotifier {
     }
   }
 
-  void setTargetNote(TargetModel target, String note, String color) {
-    target.personalNote = note;
-    target.personalNoteColor = color;
-    _saveTargetsSharedPrefs();
-    notifyListeners();
+  void setTargetNote(TargetModel changedTarget, String note, String color) {
+    // We are not updating the target directly, but instead looping for the correct one because
+    // after an attack the targets get updated several times: if the user wants to change the note
+    // right after the attack, the good target might have been replaced and the note does not get
+    // updated. Therefore, we just loop whenever the user submits the new text.
+    for (var tar in _targets) {
+      if (tar.playerId == changedTarget.playerId) {
+        tar.personalNote = note;
+        tar.personalNoteColor = color;
+        _saveTargetsSharedPrefs();
+        notifyListeners();
+        break;
+      }
+    }
   }
 
-  Future<bool> updateTarget(TargetModel oldTarget) async {
-    oldTarget.isUpdating = true;
+  Future<bool> updateTarget({
+    @required TargetModel targetToUpdate,
+    @required dynamic attacksFull,
+  }) async {
+    targetToUpdate.isUpdating = true;
     notifyListeners();
 
     try {
       dynamic myUpdatedTargetModel =
-          await TornApiCaller.target(userKey, oldTarget.playerId.toString())
-              .getTarget;
+          await TornApiCaller.target(_userKey, targetToUpdate.playerId.toString()).getTarget;
       if (myUpdatedTargetModel is TargetModel) {
-        dynamic attacksFull =
-            await TornApiCaller.attacks(userKey).getAttacksFull;
         _getTargetRespect(attacksFull, myUpdatedTargetModel);
         _getTargetFaction(myUpdatedTargetModel);
-        _targets[_targets.indexOf(oldTarget)] = myUpdatedTargetModel;
+        _targets[_targets.indexOf(targetToUpdate)] = myUpdatedTargetModel;
         var newTarget = _targets[_targets.indexOf(myUpdatedTargetModel)];
         _updateResultAnimation(newTarget, true);
-        newTarget.personalNote = oldTarget.personalNote;
-        newTarget.personalNoteColor = oldTarget.personalNoteColor;
+        newTarget.personalNote = targetToUpdate.personalNote;
+        newTarget.personalNoteColor = targetToUpdate.personalNoteColor;
         newTarget.lastUpdated = DateTime.now();
         _saveTargetsSharedPrefs();
         return true;
       } else {
         // myUpdatedTargetModel is ApiError
-        oldTarget.isUpdating = false;
-        _updateResultAnimation(oldTarget, false);
+        targetToUpdate.isUpdating = false;
+        _updateResultAnimation(targetToUpdate, false);
         return false;
       }
     } catch (e) {
-      oldTarget.isUpdating = false;
-      _updateResultAnimation(oldTarget, false);
+      targetToUpdate.isUpdating = false;
+      _updateResultAnimation(targetToUpdate, false);
       return false;
     }
   }
@@ -190,12 +209,11 @@ class TargetsProvider extends ChangeNotifier {
     }
     notifyListeners();
     // Then start the real update
-    dynamic attacksFull = await TornApiCaller.attacks(userKey).getAttacksFull;
+    dynamic attacksFull = await TornApiCaller.attacks(_userKey).getAttacksFull;
     for (var i = 0; i < _targets.length; i++) {
       try {
         dynamic myUpdatedTargetModel =
-            await TornApiCaller.target(userKey, _targets[i].playerId.toString())
-                .getTarget;
+            await TornApiCaller.target(_userKey, _targets[i].playerId.toString()).getTarget;
         if (myUpdatedTargetModel is TargetModel) {
           _getTargetRespect(attacksFull, myUpdatedTargetModel);
           _getTargetFaction(myUpdatedTargetModel);
@@ -216,7 +234,7 @@ class TargetsProvider extends ChangeNotifier {
           wasSuccessful = false;
         }
         // Wait for the API limit (100 calls/minute)
-        if (_targets.length > 90) {
+        if (_targets.length > 75) {
           await Future.delayed(const Duration(seconds: 1), () {});
         }
       } catch (e) {
@@ -233,9 +251,12 @@ class TargetsProvider extends ChangeNotifier {
     );
   }
 
-  Future<void> updateTargetsAfterAttacks(List<String> targetsIds) async {
+  Future<void> updateTargetsAfterAttacks({@required List<String> targetsIds}) async {
+    // Get attacks full to use later
+    dynamic attacksFull = await TornApiCaller.attacks(_userKey).getAttacksFull;
+
     // Local function for the update of several targets after attacking
-    void updatePass (bool showUpdateAnimation) async {
+    void updatePass(bool showUpdateAnimation) async {
       for (var tar in _targets) {
         for (var i = 0; i < targetsIds.length; i++) {
           if (tar.playerId.toString() == targetsIds[i]) {
@@ -245,10 +266,8 @@ class TargetsProvider extends ChangeNotifier {
             }
             try {
               dynamic myUpdatedTargetModel =
-              await TornApiCaller.target(userKey, tar.playerId.toString()).getTarget;
+                  await TornApiCaller.target(_userKey, tar.playerId.toString()).getTarget;
               if (myUpdatedTargetModel is TargetModel) {
-                dynamic attacksFull =
-                await TornApiCaller.attacks(userKey).getAttacksFull;
                 _getTargetRespect(attacksFull, myUpdatedTargetModel);
                 _getTargetFaction(myUpdatedTargetModel);
                 _targets[_targets.indexOf(tar)] = myUpdatedTargetModel;
@@ -273,7 +292,7 @@ class TargetsProvider extends ChangeNotifier {
               }
             }
             if (targetsIds.length > 75) {
-              await Future.delayed(const Duration(milliseconds: 750), () {});
+              await Future.delayed(const Duration(seconds: 1), () {});
             }
           }
         }
@@ -333,6 +352,7 @@ class TargetsProvider extends ChangeNotifier {
   /// CAREFUL!
   void wipeAllTargets() {
     _targets.clear();
+    notifyListeners();
   }
 
   void setFilterText(String newFilter) {
@@ -340,28 +360,32 @@ class TargetsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void sortTargets(TargetSort sortType) {
+  void sortTargets(TargetSortType sortType) {
     _currentSort = sortType;
     switch (sortType) {
-      case TargetSort.levelDes:
+      case TargetSortType.levelDes:
         _targets.sort((a, b) => b.level.compareTo(a.level));
         break;
-      case TargetSort.levelAsc:
+      case TargetSortType.levelAsc:
         _targets.sort((a, b) => a.level.compareTo(b.level));
         break;
-      case TargetSort.respectDes:
+      case TargetSortType.respectDes:
         _targets.sort((a, b) => b.respectGain.compareTo(a.respectGain));
         break;
-      case TargetSort.respectAsc:
+      case TargetSortType.respectAsc:
         _targets.sort((a, b) => a.respectGain.compareTo(b.respectGain));
         break;
-      case TargetSort.nameDes:
-        _targets.sort(
-            (a, b) => b.name.toLowerCase().compareTo(a.name.toLowerCase()));
+      case TargetSortType.nameDes:
+        _targets.sort((a, b) => b.name.toLowerCase().compareTo(a.name.toLowerCase()));
         break;
-      case TargetSort.nameAsc:
-        _targets.sort(
-            (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      case TargetSortType.nameAsc:
+        _targets.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        break;
+      case TargetSortType.colorDes:
+        _targets.sort((a, b) => b.personalNoteColor.toLowerCase().compareTo(a.personalNoteColor.toLowerCase()));
+        break;
+      case TargetSortType.colorAsc:
+        _targets.sort((a, b) => a.personalNoteColor.toLowerCase().compareTo(b.personalNoteColor.toLowerCase()));
         break;
     }
     _saveSortSharedPrefs();
@@ -390,71 +414,174 @@ class TargetsProvider extends ChangeNotifier {
     for (var tar in _targets) {
       newPrefs.add(targetModelToJson(tar));
     }
-    SharedPreferencesModel().setTargetLists(newPrefs);
+    SharedPreferencesModel().setTargetsList(newPrefs);
   }
 
   void _saveSortSharedPrefs() {
     String sortToSave;
     switch (_currentSort) {
-      case TargetSort.levelDes:
+      case TargetSortType.levelDes:
         sortToSave = 'levelDes';
         break;
-      case TargetSort.levelAsc:
+      case TargetSortType.levelAsc:
         sortToSave = 'levelAsc';
         break;
-      case TargetSort.respectDes:
+      case TargetSortType.respectDes:
         sortToSave = 'respectDes';
         break;
-      case TargetSort.respectAsc:
+      case TargetSortType.respectAsc:
         sortToSave = 'respectDes';
         break;
-      case TargetSort.nameDes:
+      case TargetSortType.nameDes:
         sortToSave = 'nameDes';
         break;
-      case TargetSort.nameAsc:
+      case TargetSortType.nameAsc:
         sortToSave = 'nameDes';
+        break;
+      case TargetSortType.colorDes:
+        sortToSave = 'colorDes';
+        break;
+      case TargetSortType.colorAsc:
+        sortToSave = 'colorAsc';
         break;
     }
-    SharedPreferencesModel().setTargetSort(sortToSave);
+    SharedPreferencesModel().setTargetsSort(sortToSave);
   }
 
-  Future<void> restoreSharedPreferences() async {
+  Future<void> restorePreferences() async {
     // User key
-    String key = await SharedPreferencesModel().getApiKey();
-    if (key != '') {
-      userKey = key;
+    if (_userDetails.userApiKeyValid) {
+      _userKey = _userDetails.userApiKey;
     }
+
     // Target list
+    bool needToSave = false;
     List<String> jsonTargets = await SharedPreferencesModel().getTargetsList();
     for (var jTar in jsonTargets) {
-      _targets.add(targetModelFromJson(jTar));
+      var thisTarget = targetModelFromJson(jTar);
+
+      // In v1.8.5 we change from blue to orange and we need to do the conversion
+      // here. This can be later removed safely at some point.
+      if (thisTarget.personalNoteColor == "blue") {
+        thisTarget.personalNoteColor = "orange";
+        needToSave = true;
+      }
+
+      _targets.add(thisTarget);
     }
+
+    if (needToSave) {
+      _saveTargetsSharedPrefs();
+    }
+
     // Target sort
-    String targetSort = await SharedPreferencesModel().getTargetSort();
+    String targetSort = await SharedPreferencesModel().getTargetsSort();
     switch (targetSort) {
       case '':
-        _currentSort = TargetSort.levelDes;
+        _currentSort = TargetSortType.levelDes;
         break;
       case 'levelDes':
-        _currentSort = TargetSort.levelDes;
+        _currentSort = TargetSortType.levelDes;
         break;
       case 'levelAsc':
-        _currentSort = TargetSort.levelAsc;
+        _currentSort = TargetSortType.levelAsc;
         break;
       case 'respectDes':
-        _currentSort = TargetSort.respectDes;
+        _currentSort = TargetSortType.respectDes;
         break;
       case 'respectAsc':
-        _currentSort = TargetSort.respectAsc;
+        _currentSort = TargetSortType.respectAsc;
         break;
       case 'nameDes':
-        _currentSort = TargetSort.nameDes;
+        _currentSort = TargetSortType.nameDes;
         break;
       case 'nameAsc':
-        _currentSort = TargetSort.nameAsc;
+        _currentSort = TargetSortType.nameAsc;
         break;
     }
     // Notification
     notifyListeners();
+  }
+
+  // YATA SYNC
+  Future<YataTargetsImportModel> getTargetsFromYata() async {
+    try {
+      var response = await http.get(
+        'https://yata.alwaysdata.net/api/v1/targets/export/?key=$_userKey',
+        headers: <String, String>{
+          'Content-Type': 'application/json; charset=UTF-8',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        return yataTargetsImportModelFromJson(response.body);
+      } else {
+        if (response.body.contains("Player not found")) {
+          return YataTargetsImportModel()..errorPlayer = true;
+        } else {
+          return YataTargetsImportModel()..errorConnection = true;
+        }
+      }
+    } catch (e) {
+      return YataTargetsImportModel()..errorConnection = true;
+    }
+  }
+
+  Future<String> postTargetsToYata({
+    @required List<TargetsOnlyLocal> onlyLocal,
+    @required List<TargetsBothSides> bothSides,
+  }) async {
+    var modelOut = YataTargetsExportModel();
+    modelOut.key = _userKey;
+    //modelOut.user = "Torn PDA $appVersion";
+
+    var targets = Map<String, YataExportTarget>();
+    for (var localTarget in onlyLocal) {
+      // Max chars in Yata notes is 128
+      if (localTarget.noteLocal.length > 128) {
+        localTarget.noteLocal = localTarget.noteLocal.substring(0, 127);
+      }
+      var exportDetails = YataExportTarget()
+        ..note = localTarget.noteLocal
+        ..color = localTarget.colorLocal;
+      targets.addAll({localTarget.id: exportDetails});
+    }
+    for (var bothSidesTarget in bothSides) {
+      // Max chars in Yata notes is 128
+      if (bothSidesTarget.noteLocal.length > 128) {
+        bothSidesTarget.noteLocal = bothSidesTarget.noteLocal.substring(0, 127);
+      }
+      var exportDetails = YataExportTarget()
+        ..note = bothSidesTarget.noteLocal
+        ..color = bothSidesTarget.colorLocal;
+      targets.addAll({bothSidesTarget.id: exportDetails});
+    }
+    modelOut.targets = targets;
+
+    var bodyOut = yataTargetsExportModelToJson(modelOut);
+
+    try {
+      var response = await http.post(
+        'https://yata.alwaysdata.net/api/v1/targets/import/',
+        headers: <String, String>{
+          'Content-Type': 'application/json; charset=UTF-8',
+        },
+        body: bodyOut,
+      );
+
+      if (response.statusCode == 200) {
+        Map<String, dynamic> result = json.decode(response.body);
+        var answer = result.values.first;
+        if (answer.contains("No new targets added") || answer.contains("You added")) {
+          answer += ". Any existing notes and colors have been exported and overwritten in YATA";
+        }
+
+        return answer;
+      } else {
+        return "";
+      }
+    } catch (e) {
+      return "";
+    }
   }
 }

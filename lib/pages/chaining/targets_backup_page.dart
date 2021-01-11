@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'package:bot_toast/bot_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:percent_indicator/linear_percent_indicator.dart';
 import 'package:provider/provider.dart';
 import 'package:share/share.dart';
 import 'package:torn_pda/models/chaining/target_backup_model.dart';
+import 'package:torn_pda/providers/settings_provider.dart';
 import 'package:torn_pda/providers/targets_provider.dart';
 import 'package:torn_pda/providers/theme_provider.dart';
 
@@ -16,6 +18,7 @@ class TargetsBackupPage extends StatefulWidget {
 class _TargetsBackupPageState extends State<TargetsBackupPage> {
   TargetsProvider _targetsProvider;
   ThemeProvider _themeProvider;
+  SettingsProvider _settingsProvider;
 
   TargetsBackupModel _tentativeImportModel;
 
@@ -44,181 +47,216 @@ class _TargetsBackupPageState extends State<TargetsBackupPage> {
   FontWeight _importHintWeight = FontWeight.normal;
 
   @override
+  void initState() {
+    super.initState();
+    _settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
+  }
+
+  @override
   Widget build(BuildContext context) {
     _targetsProvider = Provider.of<TargetsProvider>(context, listen: false);
     _themeProvider = Provider.of<ThemeProvider>(context, listen: true);
     _importHintStyle = _themeProvider.mainText;
-    return Scaffold(
-        appBar: AppBar(
-          title: Text("Import & Export"),
-        ),
-        body: Builder(builder: (BuildContext context) {
-          return GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => FocusScope.of(context).requestFocus(new FocusNode()),
-            child: SingleChildScrollView(
-              child: Column(
-                children: <Widget>[
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(15, 30, 20, 15),
-                    child: Text(
-                      "HOW TO EXPORT TARGETS",
-                      style:
-                          TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(30, 10, 30, 15),
-                    child: Text(
-                      _exportInfo,
-                      style: TextStyle(
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  Wrap(
-                    alignment: WrapAlignment.center,
-                    direction: Axis.horizontal,
+    return Container(
+      color: _themeProvider.currentTheme == AppTheme.light
+          ? Colors.blueGrey
+          : Colors.grey[900],
+      child: SafeArea(
+        top: _settingsProvider.appBarTop ? false : true,
+        bottom: true,
+        child: Scaffold(
+            appBar: _settingsProvider.appBarTop ? buildAppBar() : null,
+            bottomNavigationBar: !_settingsProvider.appBarTop
+                ? SizedBox(
+                    height: AppBar().preferredSize.height,
+                    child: buildAppBar(),
+                  )
+                : null,
+            body: Builder(builder: (BuildContext context) {
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => FocusScope.of(context).requestFocus(new FocusNode()),
+                child: SingleChildScrollView(
+                  child: Column(
                     children: <Widget>[
                       Padding(
-                          padding: EdgeInsets.fromLTRB(10, 10, 10, 0),
-                          child: RaisedButton.icon(
-                            icon: Icon(Icons.share),
-                            label: Text("Export"),
-                            onPressed: () async {
-                              var export = _targetsProvider.exportTargets();
-                              if (export == '') {
-                                Scaffold.of(context).showSnackBar(
-                                  SnackBar(
-                                    duration: Duration(seconds: 5),
-                                    content: Text(
-                                      'No targets to export!',
-                                    ),
-                                  ),
-                                );
-                              } else {
-                                Share.share(export);
-                              }
-                            },
-                          )),
-                      Padding(
-                        padding: EdgeInsets.fromLTRB(10, 10, 10, 0),
-                        child: RaisedButton.icon(
-                          icon: Icon(Icons.content_copy),
-                          label: Text("Clipboard"),
-                          onPressed: () async {
-                            var export = _targetsProvider.exportTargets();
-                            if (export == '') {
-                              Scaffold.of(context).showSnackBar(
-                                SnackBar(
-                                  duration: Duration(seconds: 5),
-                                  content: Text(
-                                    'No targets to export!',
-                                  ),
-                                ),
-                              );
-                            } else {
-                              Clipboard.setData(ClipboardData(text: export));
-                              Scaffold.of(context).showSnackBar(
-                                SnackBar(
-                                  duration: Duration(seconds: 5),
-                                  content: Text(
-                                    "${_targetsProvider.getTargetNumber()} "
-                                    "targets copied to clipboard!",
-                                  ),
-                                ),
-                              );
-                            }
-                          },
+                        padding: EdgeInsets.fromLTRB(15, 30, 20, 15),
+                        child: Text(
+                          "HOW TO EXPORT TARGETS",
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.bold),
                         ),
                       ),
-                    ],
-                  ),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(0, 30, 0, 30),
-                    child: Divider(),
-                  ),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(15, 0, 20, 15),
-                    child: Text(
-                      "HOW TO IMPORT TARGETS",
-                      style:
-                          TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(30, 10, 30, 15),
-                    child: Text(
-                      _importInfo,
-                      style: TextStyle(
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  _importProgressWidget(),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(20, 10, 20, 20),
-                    child: Form(
-                      key: _importFormKey,
-                      child: Column(
-                        children: <Widget>[
-                          TextFormField(
-                            controller: _importInputController,
-                            maxLines: 6,
-                            style: TextStyle(fontSize: 12),
-                            decoration: InputDecoration(
-                              counterText: "",
-                              border: OutlineInputBorder(),
-                              hintText: _importHintText,
-                              hintStyle: TextStyle(
-                                color: _importHintStyle,
-                                fontWeight: _importHintWeight,
-                              ),
-                            ),
-                            validator: (value) {
-                              if (value.isEmpty) {
-                                return "Cannot be empty!";
-                              }
-                              return null;
-                            },
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(30, 10, 30, 15),
+                        child: Text(
+                          _exportInfo,
+                          style: TextStyle(
+                            fontSize: 12,
                           ),
+                        ),
+                      ),
+                      Wrap(
+                        alignment: WrapAlignment.center,
+                        direction: Axis.horizontal,
+                        children: <Widget>[
                           Padding(
-                            padding: EdgeInsets.fromLTRB(10, 10, 10, 10),
-                            child: RaisedButton.icon(
-                              icon: Icon(Icons.file_download),
-                              label: Text("Import"),
-                              onPressed: () {
-                                if (_importFormKey.currentState.validate()) {
-                                  var numberImported = _importChecker();
-                                  if (numberImported == 0) {
-                                    Scaffold.of(context).showSnackBar(
-                                      SnackBar(
-                                        duration: Duration(seconds: 5),
-                                        content: Text(
-                                          'No targets to import! '
-                                          'Is the file structure correct?',
-                                        ),
+                              padding: EdgeInsets.fromLTRB(10, 10, 10, 0),
+                              child: RaisedButton.icon(
+                                icon: Icon(Icons.share),
+                                label: Text("Export"),
+                                onPressed: () async {
+                                  var export = _targetsProvider.exportTargets();
+                                  if (export == '') {
+                                    BotToast.showText(
+                                      text: "No targets to export!",
+                                      textStyle: TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.white,
                                       ),
+                                      contentColor: Colors.red,
+                                      duration: Duration(seconds: 3),
+                                      contentPadding: EdgeInsets.all(10),
                                     );
                                   } else {
-                                    FocusScope.of(context)
-                                        .requestFocus(new FocusNode());
-                                    _showImportDialog();
+                                    Share.share(export);
                                   }
+                                },
+                              )),
+                          Padding(
+                            padding: EdgeInsets.fromLTRB(10, 10, 10, 0),
+                            child: RaisedButton.icon(
+                              icon: Icon(Icons.content_copy),
+                              label: Text("Clipboard"),
+                              onPressed: () async {
+                                var export = _targetsProvider.exportTargets();
+                                if (export == '') {
+                                  BotToast.showText(
+                                    text: "No targets to export!",
+                                    textStyle: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.white,
+                                    ),
+                                    contentColor: Colors.red,
+                                    duration: Duration(seconds: 3),
+                                    contentPadding: EdgeInsets.all(10),
+                                  );
+                                } else {
+                                  Clipboard.setData(ClipboardData(text: export));
+                                  BotToast.showText(
+                                    text: "${_targetsProvider.getTargetNumber()} "
+                                        "targets copied to clipboard!",
+                                    textStyle: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.white,
+                                    ),
+                                    contentColor: Colors.green,
+                                    duration: Duration(seconds: 3),
+                                    contentPadding: EdgeInsets.all(10),
+                                  );
                                 }
                               },
                             ),
                           ),
                         ],
                       ),
-                    ),
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(0, 30, 0, 30),
+                        child: Divider(),
+                      ),
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(15, 0, 20, 15),
+                        child: Text(
+                          "HOW TO IMPORT TARGETS",
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(30, 10, 30, 15),
+                        child: Text(
+                          _importInfo,
+                          style: TextStyle(
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                      _importProgressWidget(),
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(20, 10, 20, 20),
+                        child: Form(
+                          key: _importFormKey,
+                          child: Column(
+                            children: <Widget>[
+                              TextFormField(
+                                controller: _importInputController,
+                                maxLines: 6,
+                                style: TextStyle(fontSize: 12),
+                                decoration: InputDecoration(
+                                  counterText: "",
+                                  border: OutlineInputBorder(),
+                                  hintText: _importHintText,
+                                  hintStyle: TextStyle(
+                                    color: _importHintStyle,
+                                    fontWeight: _importHintWeight,
+                                  ),
+                                ),
+                                validator: (value) {
+                                  if (value.isEmpty) {
+                                    return "Cannot be empty!";
+                                  }
+                                  return null;
+                                },
+                              ),
+                              Padding(
+                                padding: EdgeInsets.fromLTRB(10, 10, 10, 10),
+                                child: RaisedButton.icon(
+                                  icon: Icon(Icons.file_download),
+                                  label: Text("Import"),
+                                  onPressed: () {
+                                    if (_importFormKey.currentState.validate()) {
+                                      var numberImported = _importChecker();
+                                      if (numberImported == 0) {
+                                        BotToast.showText(
+                                          text: 'No targets to import! '
+                                              'Is the file structure correct?',
+                                          textStyle: TextStyle(
+                                            fontSize: 14,
+                                            color: Colors.white,
+                                          ),
+                                          contentColor: Colors.red,
+                                          duration: Duration(seconds: 3),
+                                          contentPadding: EdgeInsets.all(10),
+                                        );
+                                      } else {
+                                        FocusScope.of(context)
+                                            .requestFocus(new FocusNode());
+                                        _showImportDialog();
+                                      }
+                                    }
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      SizedBox(height: 50),
+                    ],
                   ),
-                  SizedBox(height: 50),
-                ],
-              ),
-            ),
-          );
-        }));
+                ),
+              );
+            })),
+      ),
+    );
+  }
+
+  AppBar buildAppBar() {
+    return AppBar(
+      elevation: _settingsProvider.appBarTop ? 2 : 0,
+      brightness: Brightness.dark,
+      title: Text("Import & Export"),
+    );
   }
 
   @override
@@ -409,9 +447,11 @@ class _TargetsBackupPageState extends State<TargetsBackupPage> {
   Future<void> _importTargets() async {
     _importActive = true; // Show import status
     _importSuccessEvents = 0;
+    dynamic attacksFull = await _targetsProvider.getAttacksFull();
     for (var import in _tentativeImportModel.targetBackup) {
       var importResult = await _targetsProvider.addTarget(
-        import.id.toString(),
+        targetId: import.id.toString(),
+        attacksFull: attacksFull,
         notes: import.notes,
         notesColor: import.notesColor,
       );

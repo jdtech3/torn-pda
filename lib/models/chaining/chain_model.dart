@@ -33,29 +33,29 @@ class ChainDetails {
   int start;
 
   ChainDetails({
-    this.current,
-    this.max,
-    this.timeout,
-    this.modifier,
-    this.cooldown,
-    this.start,
+    this.current = 0,
+    this.max = 0,
+    this.timeout = 0,
+    this.modifier= 0,
+    this.cooldown = 0,
+    this.start = 0,
   });
 
   factory ChainDetails.fromJson(Map<String, dynamic> json) => ChainDetails(
-    current: json["current"],
-    max: json["max"],
-    timeout: json["timeout"],
-    modifier: json["modifier"].toDouble(),
-    cooldown: json["cooldown"],
-    start: json["start"],
+    current: json["current"] == null ? null : json["current"],
+    max: json["max"] == null ? null : json["max"],
+    timeout: json["timeout"] == null ? null : json["timeout"],
+    modifier: json["modifier"] == null ? null : json["modifier"].toDouble(),
+    cooldown: json["cooldown"] == null ? null : json["cooldown"],
+    start: json["start"] == null ? null : json["start"],
   );
 
   Map<String, dynamic> toJson() => {
-    "current": current,
-    "max": max,
-    "timeout": timeout,
-    "modifier": modifier,
-    "cooldown": cooldown,
-    "start": start,
+    "current": current == null ? null : current,
+    "max": max == null ? null : max,
+    "timeout": timeout == null ? null : timeout,
+    "modifier": modifier == null ? null : modifier,
+    "cooldown": cooldown == null ? null : cooldown,
+    "start": start == null ? null : start,
   };
 }

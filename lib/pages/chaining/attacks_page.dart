@@ -1,11 +1,13 @@
 import 'dart:async';
+import 'package:bot_toast/bot_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:provider/provider.dart';
-import 'package:torn_pda/models/chaining/attack_sort_popup.dart';
+import 'package:torn_pda/models/chaining/attack_sort.dart';
 import 'package:torn_pda/providers/attacks_provider.dart';
+import 'package:torn_pda/providers/settings_provider.dart';
 import 'package:torn_pda/providers/theme_provider.dart';
-import 'package:torn_pda/widgets/attacks_list.dart';
+import 'package:torn_pda/widgets/chaining/attacks_list.dart';
 
 class AttacksPage extends StatefulWidget {
   final String userKey;
@@ -21,22 +23,24 @@ class _AttacksPageState extends State<AttacksPage> {
 
   AttacksProvider _attacksProvider;
   ThemeProvider _themeProvider;
+  SettingsProvider _settingsProvider;
 
   Color _filterTypeColor;
   Text _filterText = Text('');
 
-  final _popupChoices = <AttackSortPopup>[
-    AttackSortPopup(type: AttackSort.levelDes),
-    AttackSortPopup(type: AttackSort.levelAsc),
-    AttackSortPopup(type: AttackSort.respectDes),
-    AttackSortPopup(type: AttackSort.respectAsc),
-    AttackSortPopup(type: AttackSort.dateDes),
-    AttackSortPopup(type: AttackSort.dateAsc),
+  final _popupChoices = <AttackSort>[
+    AttackSort(type: AttackSortType.levelDes),
+    AttackSort(type: AttackSortType.levelAsc),
+    AttackSort(type: AttackSortType.respectDes),
+    AttackSort(type: AttackSortType.respectAsc),
+    AttackSort(type: AttackSortType.dateDes),
+    AttackSort(type: AttackSortType.dateAsc),
   ];
 
   @override
   void initState() {
     super.initState();
+    _settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
     _searchController.addListener(onSearchInputTextChange);
     // Reset the filter so that we get all the targets
     SchedulerBinding.instance.addPostFrameCallback((_) {
@@ -51,80 +55,13 @@ class _AttacksPageState extends State<AttacksPage> {
     _themeProvider = Provider.of<ThemeProvider>(context, listen: true);
     return Scaffold(
       drawer: Drawer(),
-      appBar: AppBar(
-        title: Text('Attacks'),
-        leading: new IconButton(
-          icon: new Icon(Icons.menu),
-          onPressed: () {
-            final ScaffoldState scaffoldState =
-                context.findRootAncestorStateOfType();
-            scaffoldState.openDrawer();
-          },
-        ),
-        actions: <Widget>[
-          IconButton(
-            icon: Icon(
-              Icons.refresh,
-              color: _themeProvider.buttonText,
-            ),
-            onPressed: () async {
-              _attacksProvider.initializeAttacks();
-              Scaffold.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Updated with latest attacks!'),
-                ),
-              );
-            },
-          ),
-          IconButton(
-            icon: Icon(Icons.accessibility),
-            color: _filterTypeColor,
-            onPressed: () {
-              var filterType = _attacksProvider.currentTypeFilter;
-              if (filterType == AttackTypeFilter.all) {
-                _attacksProvider.setFilterType(AttackTypeFilter.unknownTargets);
-                _changeFilterColorAndText();
-                Scaffold.of(context).showSnackBar(
-                  SnackBar(
-                    duration: Duration(seconds: 2),
-                    content: Text(
-                      'Hiding people already added to the target list!',
-                    ),
-                  ),
-                );
-              } else {
-                _attacksProvider.setFilterType(AttackTypeFilter.all);
-                _changeFilterColorAndText();
-                Scaffold.of(context).showSnackBar(
-                  SnackBar(
-                    duration: Duration(seconds: 2),
-                    content: Text(
-                      'Showing all recent attacks!',
-                    ),
-                  ),
-                );
-              }
-            },
-          ),
-          PopupMenuButton<AttackSortPopup>(
-            icon: Icon(
-              Icons.sort,
-            ),
-            onSelected: _selectSortPopup,
-            // Not using initial value yet, see
-            // https://github.com/flutter/flutter/issues/19954
-            // initialValue: _popupChoices[0],
-            itemBuilder: (BuildContext context) {
-              return _popupChoices.map((AttackSortPopup choice) {
-                return PopupMenuItem<AttackSortPopup>(
-                  value: choice,
-                  child: Text(choice.description),
-                );
-              }).toList();
-            },
-          ),
-        ],
-      ),
+      appBar: _settingsProvider.appBarTop ? buildAppBar() : null,
+      bottomNavigationBar: !_settingsProvider.appBarTop
+          ? SizedBox(
+              height: AppBar().preferredSize.height,
+              child: buildAppBar(),
+            )
+          : null,
       body: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: () => FocusScope.of(context).requestFocus(new FocusNode()),
@@ -179,6 +116,99 @@ class _AttacksPageState extends State<AttacksPage> {
     );
   }
 
+  AppBar buildAppBar() {
+    return AppBar(
+      elevation: _settingsProvider.appBarTop ? 2 : 0,
+      brightness: Brightness.dark,
+      title: Text('Attacks'),
+      leading: new IconButton(
+        icon: new Icon(Icons.menu),
+        onPressed: () {
+          final ScaffoldState scaffoldState = context.findRootAncestorStateOfType();
+          scaffoldState.openDrawer();
+        },
+      ),
+      actions: <Widget>[
+        IconButton(
+          icon: Icon(
+            Icons.refresh,
+            color: _themeProvider.buttonText,
+          ),
+          onPressed: () async {
+            _attacksProvider.initializeAttacks();
+
+            BotToast.showText(
+              text: 'Updated with latest attacks!',
+              textStyle: TextStyle(
+                fontSize: 14,
+                color: Colors.white,
+              ),
+              contentColor: Colors.green,
+              duration: Duration(seconds: 3),
+              contentPadding: EdgeInsets.all(10),
+            );
+
+          },
+        ),
+        IconButton(
+          icon: Icon(Icons.accessibility),
+          color: _filterTypeColor,
+          onPressed: () {
+            var filterType = _attacksProvider.currentTypeFilter;
+            if (filterType == AttackTypeFilter.all) {
+              _attacksProvider.setFilterType(AttackTypeFilter.unknownTargets);
+              _changeFilterColorAndText();
+
+              BotToast.showText(
+                text: 'Hiding people already added to the target list!',
+                textStyle: TextStyle(
+                  fontSize: 14,
+                  color: Colors.white,
+                ),
+                contentColor: Colors.green,
+                duration: Duration(seconds: 3),
+                contentPadding: EdgeInsets.all(10),
+              );
+
+            } else {
+              _attacksProvider.setFilterType(AttackTypeFilter.all);
+              _changeFilterColorAndText();
+
+              BotToast.showText(
+                text: 'Showing all recent attacks!',
+                textStyle: TextStyle(
+                  fontSize: 14,
+                  color: Colors.white,
+                ),
+                contentColor: Colors.green,
+                duration: Duration(seconds: 3),
+                contentPadding: EdgeInsets.all(10),
+              );
+
+            }
+          },
+        ),
+        PopupMenuButton<AttackSort>(
+          icon: Icon(
+            Icons.sort,
+          ),
+          onSelected: _selectSortPopup,
+          // Not using initial value yet, see
+          // https://github.com/flutter/flutter/issues/19954
+          // initialValue: _popupChoices[0],
+          itemBuilder: (BuildContext context) {
+            return _popupChoices.map((AttackSort choice) {
+              return PopupMenuItem<AttackSort>(
+                value: choice,
+                child: Text(choice.description),
+              );
+            }).toList();
+          },
+        ),
+      ],
+    );
+  }
+
   @override
   Future dispose() async {
     _searchController.dispose();
@@ -186,29 +216,28 @@ class _AttacksPageState extends State<AttacksPage> {
   }
 
   void onSearchInputTextChange() {
-    Provider.of<AttacksProvider>(context, listen: false)
-        .setFilterText(_searchController.text);
+    Provider.of<AttacksProvider>(context, listen: false).setFilterText(_searchController.text);
   }
 
-  void _selectSortPopup(AttackSortPopup choice) {
+  void _selectSortPopup(AttackSort choice) {
     switch (choice.type) {
-      case AttackSort.levelDes:
-        _attacksProvider.sortAttacks(AttackSort.levelDes);
+      case AttackSortType.levelDes:
+        _attacksProvider.sortAttacks(AttackSortType.levelDes);
         break;
-      case AttackSort.levelAsc:
-        _attacksProvider.sortAttacks(AttackSort.levelAsc);
+      case AttackSortType.levelAsc:
+        _attacksProvider.sortAttacks(AttackSortType.levelAsc);
         break;
-      case AttackSort.respectDes:
-        _attacksProvider.sortAttacks(AttackSort.respectDes);
+      case AttackSortType.respectDes:
+        _attacksProvider.sortAttacks(AttackSortType.respectDes);
         break;
-      case AttackSort.respectAsc:
-        _attacksProvider.sortAttacks(AttackSort.respectAsc);
+      case AttackSortType.respectAsc:
+        _attacksProvider.sortAttacks(AttackSortType.respectAsc);
         break;
-      case AttackSort.dateDes:
-        _attacksProvider.sortAttacks(AttackSort.dateDes);
+      case AttackSortType.dateDes:
+        _attacksProvider.sortAttacks(AttackSortType.dateDes);
         break;
-      case AttackSort.dateAsc:
-        _attacksProvider.sortAttacks(AttackSort.dateAsc);
+      case AttackSortType.dateAsc:
+        _attacksProvider.sortAttacks(AttackSortType.dateAsc);
         break;
     }
   }
